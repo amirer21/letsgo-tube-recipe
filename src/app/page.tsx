@@ -1,103 +1,179 @@
-import Image from "next/image";
+'use client';
+
+import { useState, useEffect } from 'react';
+import { Header } from '@/components/Header';
+import { UrlInput } from '@/components/UrlInput';
+import { RecipeCard } from '@/components/RecipeCard';
+import { HistoryCard } from '@/components/HistoryCard';
+import { LoadingSpinner } from '@/components/LoadingSpinner';
+import { useAppStore } from '@/lib/store';
+import { getTranslation } from '@/lib/i18n';
+import { Recipe, AnalysisHistory } from '@/types';
+import { AlertCircle } from 'lucide-react';
 
 export default function Home() {
-  return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+  const {
+    currentRecipe,
+    analysisHistory,
+    isLoading,
+    error,
+    language,
+    setCurrentRecipe,
+    addToHistory,
+    setLoading,
+    setError,
+  } = useAppStore();
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+  const [loadingStage, setLoadingStage] = useState<'extracting' | 'whisper' | 'analyzing' | 'generating'>('extracting');
+  const t = (key: string) => getTranslation(language, key);
+
+  const analyzeVideo = async (url: string) => {
+    try {
+      setLoading(true);
+      setError(null);
+      setCurrentRecipe(null);
+
+      // 1단계: 자막 추출 시도
+      setLoadingStage('extracting');
+      
+      const response = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ url }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        
+                  // 자막이 없는 경우 Whisper API 사용 안내
+                  if (errorData.error && errorData.error.includes('자막')) {
+                    console.log('자막 오류 감지, Whisper API로 재시도...');
+                    setLoadingStage('whisper');
+                    
+                    // Whisper 옵션으로 재시도
+                    const whisperResponse = await fetch('/api/analyze', {
+                      method: 'POST',
+                      headers: {
+                        'Content-Type': 'application/json',
+                      },
+                      body: JSON.stringify({ url, useWhisper: true }),
+                    });
+
+                    console.log('Whisper API 응답 상태:', whisperResponse.status);
+                    console.log('Whisper API 응답 OK:', whisperResponse.ok);
+
+                    if (!whisperResponse.ok) {
+                      const whisperErrorData = await whisperResponse.json();
+                      console.error('Whisper API 오류 데이터:', whisperErrorData);
+                      throw new Error(whisperErrorData.error || '음성 인식에 실패했습니다.');
+                    }
+
+          setLoadingStage('analyzing');
+          const { recipe } = await whisperResponse.json();
+          setCurrentRecipe(recipe);
+
+          // 히스토리에 추가
+          const historyItem: AnalysisHistory = {
+            id: recipe.id,
+            videoUrl: recipe.videoUrl,
+            title: recipe.title,
+            thumbnailUrl: recipe.thumbnailUrl,
+            analyzedAt: new Date(),
+          };
+          addToHistory(historyItem);
+          return;
+        }
+        
+        throw new Error(errorData.error || '분석에 실패했습니다.');
+      }
+
+      // 자막 추출 성공
+      setLoadingStage('analyzing');
+      const { recipe } = await response.json();
+      setCurrentRecipe(recipe);
+
+      // 히스토리에 추가
+      const historyItem: AnalysisHistory = {
+        id: recipe.id,
+        videoUrl: recipe.videoUrl,
+        title: recipe.title,
+        thumbnailUrl: recipe.thumbnailUrl,
+        analyzedAt: new Date(),
+      };
+      addToHistory(historyItem);
+
+    } catch (error) {
+      console.error('분석 오류:', error);
+      setError(error instanceof Error ? error.message : '알 수 없는 오류가 발생했습니다.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const deleteHistory = (id: string) => {
+    const newHistory = analysisHistory.filter(item => item.id !== id);
+    useAppStore.setState({ analysisHistory: newHistory });
+  };
+
+  return (
+    <div className="min-h-screen bg-background">
+      <Header />
+      
+      <main className="container mx-auto px-4 py-8">
+        <div className="max-w-4xl mx-auto space-y-8">
+          {/* 메인 입력 섹션 */}
+          <div className="text-center space-y-4">
+            <h1 className="text-3xl font-bold">{t('app.title')}</h1>
+            <p className="text-muted-foreground">{t('app.description')}</p>
+            <UrlInput onAnalyze={analyzeVideo} />
+          </div>
+
+          {/* 에러 메시지 */}
+          {error && (
+            <div className="flex items-center gap-2 p-4 bg-destructive/10 border border-destructive/20 rounded-lg text-destructive">
+              <AlertCircle className="h-4 w-4" />
+              <span>{error}</span>
+            </div>
+          )}
+
+          {/* 로딩 상태 */}
+          {isLoading && <LoadingSpinner stage={loadingStage} />}
+
+          {/* 현재 레시피 */}
+          {currentRecipe && !isLoading && (
+            <div className="space-y-4">
+              <h2 className="text-2xl font-semibold">분석 결과</h2>
+              <RecipeCard recipe={currentRecipe} />
+            </div>
+          )}
+
+          {/* 최근 분석 내역 */}
+          {analysisHistory.length > 0 && !isLoading && (
+            <div className="space-y-4">
+              <h2 className="text-2xl font-semibold">{t('main.recentAnalyses')}</h2>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {analysisHistory.map((history) => (
+                  <HistoryCard
+                    key={history.id}
+                    history={history}
+                    onReanalyze={analyzeVideo}
+                    onDelete={deleteHistory}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* 빈 상태 */}
+          {!currentRecipe && !isLoading && analysisHistory.length === 0 && (
+            <div className="text-center py-12">
+              <p className="text-muted-foreground">{t('main.noHistory')}</p>
+            </div>
+          )}
         </div>
       </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
     </div>
   );
 }
